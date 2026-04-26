@@ -1,0 +1,6 @@
+agri_env/
+__pycache__/
+*.pyc
+.env
+faiss_index/
+data/pdfs/
