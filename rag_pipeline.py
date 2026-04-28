@@ -20,7 +20,7 @@ from dotenv import load_dotenv   # ← ADD THIS
 
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain.docstore.document import Document
+from langchain_core.documents import Document
 
 from openai import OpenAI
 import os
@@ -59,8 +59,13 @@ Instructions:
 - Use bullet points and numbered steps where helpful.
 - Use simple language a farmer can understand.
 - Include specific quantities, timings, or product names if present in the context.
-- If the context does not contain enough information to answer, respond EXACTLY with:
-  "Insufficient data: I could not find reliable information about this in my knowledge base. Please consult your local Krishi Vigyan Kendra (KVK) or agricultural extension officer."
+- Include specific quantities, timings, or product names if present in the context.
+- Answer confidently using whatever information is available in the context.
+- Do NOT add any disclaimer, note, or "insufficient data" message at the end.
+- Do NOT say "the context does not provide" or "please consult" at the end.
+- If the context has ZERO relevant information, only then say:
+  "I don't have specific information about this topic. Please ask your local KVK officer."
+- NEVER mix a good answer with an insufficient data message together.
 
 Answer:"""
 
@@ -103,15 +108,28 @@ def _load_vectorstore() -> FAISS:
 
 # ─── Pipeline Steps ───────────────────────────────────────────────────────────
 
+CROP_CORRECTIONS = {
+    "promoganate": "pomegranate", "promogranate": "pomegranate",
+    "pomagranate": "pomegranate", "pomogranate":  "pomegranate",
+    "anar": "pomegranate", "anaar": "pomegranate",
+    "aam": "mango", "keri": "mango",
+    "kela": "banana", "kella": "banana",
+    "gehun": "wheat", "gehu": "wheat",
+    "chawal": "rice", "dhan": "rice",
+    "makka": "maize", "angur": "grapes",
+    "amrood": "guava", "papita": "papaya",
+    "strawbery": "strawberry", "soya": "soybean",
+}
+
 def clean_query(raw: str) -> str:
-    """
-    Step 3 – Query Cleaning.
-    Lowercase, strip excess whitespace, remove special characters
-    that don't add semantic meaning.
-    """
     text = raw.strip().lower()
-    text = re.sub(r"[^\w\s\?\.\,\-]", " ", text)   # keep basic punctuation
-    text = re.sub(r"\s+", " ", text)                 # collapse whitespace
+    text = re.sub(r"[^\w\s\?\.\,\-]", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    words = text.split()
+    words = [CROP_CORRECTIONS.get(w, w) for w in words]
+    text = " ".join(words)
+    for wrong, right in CROP_CORRECTIONS.items():
+        text = text.replace(wrong, right)
     return text
 
 def retrieve(query: str, k: int = TOP_K) -> list[tuple[Document, float]]:
@@ -151,13 +169,29 @@ def build_prompt(question: str, docs: list[tuple[Document, float]]) -> str:
     return PROMPT_TEMPLATE.format(context=context, question=question)
 
 
-def _call_openai(prompt: str) -> str:
-    """Call Groq LLM (free alternative to OpenAI)."""
+def _call_openai(prompt: str, history: list = []) -> str:
+    """Call Groq LLM with chat history support."""
     from groq import Groq
     groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+    messages = [
+        {
+            "role": "system",
+            "content": "You are KhedutMitra, an expert agricultural advisor for Indian farmers. Answer only from the provided context. Be friendly, practical, and concise. Do NOT add insufficient data message if you already gave an answer."
+        }
+    ]
+    # Add last 6 messages from history (3 exchanges)
+    for msg in history[-6:]:
+        messages.append({
+            "role": msg.get("role", "user"),
+            "content": msg.get("content", "")
+        })
+    # Add current prompt
+    messages.append({"role": "user", "content": prompt})
+
     response = groq_client.chat.completions.create(
         model="llama-3.1-8b-instant",
-        messages=[{"role": "user", "content": prompt}],
+        messages=messages,
         temperature=0.2,
         max_tokens=600,
     )
@@ -192,7 +226,7 @@ def _call_fallback(prompt: str, docs: list[tuple[Document, float]]) -> str:
     return "\n".join(lines)
 
 
-def generate_answer(prompt: str, docs: list[tuple[Document, float]]) -> str:
+def generate_answer(prompt: str, docs: list[tuple[Document, float]], history: list = []) -> str:
     """
     Step 7 – LLM Response Generation.
     Uses Groq if key is available, otherwise structured fallback.
@@ -200,7 +234,7 @@ def generate_answer(prompt: str, docs: list[tuple[Document, float]]) -> str:
     api_key = os.environ.get("GROQ_API_KEY", "").strip()
     if api_key:
         try:
-            return _call_openai(prompt)
+            return _call_openai(prompt, history)
         except Exception as e:
             logger.error(f"Groq call failed: {e}")
             return _call_fallback(prompt, docs)
@@ -211,7 +245,86 @@ def generate_answer(prompt: str, docs: list[tuple[Document, float]]) -> str:
 
 # ─── Public Entry Point ───────────────────────────────────────────────────────
 
-def ask(raw_query: str) -> dict:
+# Store user's name across conversation
+_user_name = None
+
+GREET_PATTERN = re.compile(
+    r"^(hi|hey|hello|hii|hiii|namaste|namaskar|salaam|"
+    r"good\s*(morning|afternoon|evening|night)|"
+    r"how are you|how r u|kaisa ho|"
+    r"ok|okay|thanks|thank you|dhanyawad|bye|goodbye)[\s!\.]*$",
+    re.IGNORECASE
+)
+
+NAME_PATTERN = re.compile(
+    r"my\s+name\s+is\s+([A-Za-z]+)|mera\s+naam\s+([A-Za-z]+)|"
+    r"i'm\s+([A-Za-z]+)|call\s+me\s+([A-Za-z]+)",
+    re.IGNORECASE
+)
+
+# Words that should NOT be treated as names
+NOT_A_NAME = {
+    "a", "an", "the", "is", "am", "are", "was", "were", "be",
+    "to", "of", "in", "on", "at", "for", "with", "from", "by",
+    "give", "going", "here", "just", "not", "also", "tell",
+    "your", "my", "our", "their", "its", "this", "that",
+    "krushik"  # remove this after testing
+}
+
+def _check_conversation(raw: str):
+    global _user_name
+    text = raw.strip()
+
+    # Greeting check
+    if GREET_PATTERN.match(text):
+        return (
+            "Namaste! 🌾 I'm KhedutMitra, your agricultural assistant.\n\n"
+            "You can ask me about:\n"
+            "• 🌱 Crop cultivation\n"
+            "• 💊 Fertilizer recommendations\n"
+            "• 🐛 Pest & disease management\n"
+            "• 💧 Irrigation guidance\n"
+            "• 🏛️ Government schemes\n\n"
+            "How can I help your farm today?"
+        )
+
+    # "What is my name?" check
+    if re.search(r"what\s+is\s+my\s+name|what'?s\s+my\s+name|my\s+name\s+kya|mera\s+naam\s+kya", text, re.IGNORECASE):
+        if _user_name:
+            return f"Your name is {_user_name}! 😊"
+        else:
+            return "You haven't told me your name yet! Please say 'My name is [your name]'."
+
+    # Name introduction check
+    match = NAME_PATTERN.search(text)
+    if match:
+        name = next((g for g in match.groups() if g), None)
+        # Reject if it's a common word, not a real name
+        if name and name.lower() not in NOT_A_NAME and len(name) > 2:
+            name = name.capitalize()
+            _user_name = name   # ← store name globally
+            return (
+                f"Namaste {name}! 🌾\n\n"
+                f"Nice to meet you, {name}! I'm KhedutMitra.\n\n"
+                f"Ask me anything about crops, fertilizers, pest control, "
+                f"irrigation, or government schemes.\n\n"
+                f"What would you like to know today, {name}?"
+            )
+
+    return None
+
+
+def ask(raw_query: str, history: list = []) -> dict:
+    # ── Conversation check — BEFORE RAG and Groq ──────────────────────────
+    
+    conv_answer = _check_conversation(raw_query)
+    if conv_answer:                                       
+        return {                                          
+            "answer": conv_answer,                        
+            "source_chunks": [],                          
+            "clean_query": raw_query.strip().lower(),     
+        }                                            
+        
     """
     Full RAG pipeline.
 
@@ -237,7 +350,8 @@ def ask(raw_query: str) -> dict:
     prompt = build_prompt(query, docs)
 
     # Step 7
-    answer = generate_answer(prompt, docs)
+    # Step 7
+    answer = generate_answer(prompt, docs, history)
 
     # Step 8 – format response
     source_chunks = [

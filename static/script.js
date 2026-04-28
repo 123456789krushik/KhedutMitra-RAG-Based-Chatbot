@@ -22,6 +22,7 @@ const exampleChips = document.querySelectorAll(".example-chip");
 
 let isListening   = false;
 let recognition   = null;
+const chatHistory = [];
 
 // ─── Voice Setup (Web Speech API) ────────────────────────────────────────────
 
@@ -103,10 +104,16 @@ async function sendQuery() {
   setStatus("Searching knowledge base…");
 
   try {
+    // Save user message to history
+    chatHistory.push({ role: "user", content: query });
+
     const res = await fetch("/ask", {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ query }),
+      body:    JSON.stringify({ 
+        query,
+        history: chatHistory.slice(-6)   // send last 6 messages
+      }),
     });
 
     if (!res.ok) {
@@ -115,6 +122,8 @@ async function sendQuery() {
     }
 
     const data = await res.json();
+    // Save bot reply to history
+    chatHistory.push({ role: "assistant", content: data.answer });
     removeThinking(thinkingId);
     appendBotMessage(data);
     setStatus(`✓ Answered in ${data.latency_ms} ms | ${data.source_chunks.length} source(s) retrieved`);

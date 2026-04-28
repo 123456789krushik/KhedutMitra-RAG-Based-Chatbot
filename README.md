@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 🌾 Agri RAG Chatbot
 
 A production-quality Agricultural AI Chatbot built with a **Retrieval-Augmented Generation (RAG)** pipeline. Every answer is grounded in retrieved knowledge — no hallucinations.
@@ -225,3 +226,6 @@ How do I treat yellow rust in wheat?
 | LLM         | OpenAI GPT-3.5-turbo                 |
 | Frontend    | HTML5, CSS3, Vanilla JS              |
 | Voice       | Web Speech API                       |
+=======
+# KhedutMitra-RAG-Based-Chatbot
+>>>>>>> 8b8e3a77792ab19c23b0be368052f26b2b196f86

@@ -8,6 +8,7 @@ Exposes:
   GET  /             → serves chat UI (index.html)
 """
  
+import re
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -67,9 +68,14 @@ templates = Jinja2Templates(directory="templates")
  
 # ─── Schemas ──────────────────────────────────────────────────────────────────
  
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
 class AskRequest(BaseModel):
     query: str
- 
+    history: list[ChatMessage] = []
+
     @field_validator("query")
     @classmethod
     def query_not_empty(cls, v: str) -> str:
@@ -109,35 +115,67 @@ async def health():
     return {"status": "ok", "service": "agri-rag-chatbot"}
  
  
+# ─── Conversation Detection ───────────────────────────────────────────────────
+
+GREET_PATTERN = re.compile(
+    r"^(hi|hey|hello|hii|namaste|namaskar|salaam|"
+    r"good\s*(morning|afternoon|evening|night)|"
+    r"how are you|how r u|kaisa ho|"
+    r"ok|okay|thanks|thank you|dhanyawad|bye|goodbye)[\s!\.]*$",
+    re.IGNORECASE
+)
+NAME_PATTERN = re.compile(
+    r"my\s+name\s+is\s+(\w+)|mera\s+naam\s+(\w+)|"
+    r"i\s+am\s+(\w+)|i'm\s+(\w+)|call\s+me\s+(\w+)",
+    re.IGNORECASE
+)
+
+def _check_conversation(raw: str):
+    text = raw.strip()
+    if GREET_PATTERN.match(text):
+        return (
+            "Namaste! 🌾 I'm KhedutMitra, your agricultural assistant.\n\n"
+            "You can ask me about:\n"
+            "• 🌱 Crop cultivation\n"
+            "• 💊 Fertilizer recommendations\n"
+            "• 🐛 Pest & disease management\n"
+            "• 💧 Irrigation guidance\n"
+            "• 🏛️ Government schemes\n\n"
+            "How can I help your farm today?"
+        )
+    match = NAME_PATTERN.search(text)
+    if match:
+        name = next(g for g in match.groups() if g).capitalize()
+        return (
+            f"Namaste {name}! 🌾\n\n"
+            f"Nice to meet you, {name}! I'm KhedutMitra.\n\n"
+            f"Ask me anything about crops, fertilizers, pest control, "
+            f"irrigation, or government schemes.\n\n"
+            f"What would you like to know today, {name}?"
+        )
+    return None
+
+
 @app.post("/ask", response_model=AskResponse)
 async def ask(body: AskRequest):
-    """
-    Main RAG endpoint.
-
-    Pipeline:
-      1. Receive query (text/voice-transcribed)
-      2. clean_query()
-      3. retrieve() top-K chunks from FAISS
-      4. build_prompt() with strict template
-      5. generate_answer() via LLM
-      6. Return answer + source chunks + latency
-    """
     logger.info(f"Query: {body.query!r}")
     t0 = time.perf_counter()
 
-    # ── Greeting Handler ──────────────────────────────────────────
-    GREETINGS = ["how are you", "hello", "hi", "namaste", "hey", "good morning", "good evening"]
-    if any(body.query.lower().strip().startswith(g) for g in GREETINGS):
+    # ── Step 1: Conversation check (greetings / name) ─────────────────────
+    conv_answer = _check_conversation(body.query)
+    if conv_answer:
         return AskResponse(
-            answer="Namaste! 🌾 I'm your agricultural assistant. Ask me about crops, fertilizers, pest control, irrigation, or government schemes!",
+            answer=conv_answer,
             source_chunks=[],
-            clean_query=body.query,
-            latency_ms=0.0
+            clean_query=body.query.lower().strip(),
+            latency_ms=round((time.perf_counter() - t0) * 1000, 1),
         )
-    # ── End Greeting Handler ──────────────────────────────────────
+
+    # ── Step 2: Agricultural RAG with history ─────────────────────────────
+    history = [{"role": m.role, "content": m.content} for m in body.history]
 
     try:
-        result = rag_pipeline.ask(body.query)
+        result = rag_pipeline.ask(body.query, history)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
@@ -145,7 +183,7 @@ async def ask(body: AskRequest):
         raise HTTPException(status_code=500, detail="Internal server error.")
 
     latency = round((time.perf_counter() - t0) * 1000, 1)
-    logger.info(f"Answered in {latency} ms | chunks retrieved: {len(result['source_chunks'])}")
+    logger.info(f"Answered in {latency} ms | chunks: {len(result['source_chunks'])}")
 
     return AskResponse(
         answer=result["answer"],
