@@ -26,9 +26,10 @@ import os
 
 # ─── Setup ────────────────────────────────────────────────────────────────────
  
-load_dotenv()   # loads OPENAI_API_KEY from .env if present
+load_dotenv()   
 
-api_key = os.getenv("OPENAI_API_KEY")
+# Ensure the Hugging Face token is loaded for the pipeline
+hf_token = os.getenv("HF_TOKEN")
  
 logging.basicConfig(
     level=logging.INFO,

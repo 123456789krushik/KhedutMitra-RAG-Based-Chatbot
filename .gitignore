@@ -4,3 +4,8 @@ __pycache__/
 .env
 faiss_index/
 data/pdfs/
+
+.vscode/
+.pytest_cache/
+*.log
+.DS_Store

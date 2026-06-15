@@ -7,6 +7,8 @@ import re
 
 app = FastAPI()
 
+print("========== MY MAIN.PY LOADED ==========")
+
 # Templates (HTML)
 templates = Jinja2Templates(directory="templates")
 
@@ -52,3 +54,11 @@ def chat(request: QueryRequest):
 
     # Otherwise go to RAG pipeline
     return ask(request.query)
+
+@app.post("/ask")
+def ask_endpoint(request: QueryRequest):
+    return ask(request.query)
+
+@app.get("/test")
+def test():
+    return {"status": "working"}

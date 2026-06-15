@@ -107,7 +107,7 @@ async function sendQuery() {
     // Save user message to history
     chatHistory.push({ role: "user", content: query });
 
-    const res = await fetch("/ask", {
+    const res = await fetch("/chat", {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify({ 
@@ -125,8 +125,16 @@ async function sendQuery() {
     // Save bot reply to history
     chatHistory.push({ role: "assistant", content: data.answer });
     removeThinking(thinkingId);
-    appendBotMessage(data);
-    setStatus(`✓ Answered in ${data.latency_ms} ms | ${data.source_chunks.length} source(s) retrieved`);
+    
+    //appendBotMessage(data);
+    appendBotMessage({
+    answer: data.answer || "No answer returned",
+    source_chunks: data.source_chunks || [],
+    clean_query: data.clean_query || query
+});
+    
+    //setStatus(`✓ Answered in ${data.latency_ms} ms | ${data.source_chunks.length} source(s) retrieved`);
+    setStatus("✓ Answer generated");
   } catch (err) {
     removeThinking(thinkingId);
     appendMessage("bot-error", `⚠️ ${err.message}`);

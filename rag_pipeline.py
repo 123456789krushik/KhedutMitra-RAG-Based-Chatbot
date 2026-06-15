@@ -22,15 +22,9 @@ from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 
-from openai import OpenAI
+from ollama import chat
 import os
 
-load_dotenv()
-
-# Set HuggingFace token
-hf_token = os.getenv("HF_TOKEN")
-if hf_token:
-    os.environ["HUGGINGFACE_HUB_TOKEN"] = hf_token
 
 client = None
 
@@ -169,80 +163,33 @@ def build_prompt(question: str, docs: list[tuple[Document, float]]) -> str:
     return PROMPT_TEMPLATE.format(context=context, question=question)
 
 
-def _call_openai(prompt: str, history: list = []) -> str:
-    """Call Groq LLM with chat history support."""
-    from groq import Groq
-    groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-
-    messages = [
-        {
-            "role": "system",
-            "content": "You are KhedutMitra, an expert agricultural advisor for Indian farmers. Answer only from the provided context. Be friendly, practical, and concise. Do NOT add insufficient data message if you already gave an answer."
-        }
-    ]
-    # Add last 6 messages from history (3 exchanges)
-    for msg in history[-6:]:
-        messages.append({
-            "role": msg.get("role", "user"),
-            "content": msg.get("content", "")
-        })
-    # Add current prompt
-    messages.append({"role": "user", "content": prompt})
-
-    response = groq_client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=messages,
-        temperature=0.2,
-        max_tokens=600,
+def _call_llama(prompt: str) -> str:
+    response = chat(
+        model="gemma3:1b",
+        messages=[
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
     )
-    return response.choices[0].message.content.strip()
 
-
-def _call_fallback(prompt: str, docs: list[tuple[Document, float]]) -> str:
-    """
-    Fallback when no OpenAI key is set.
-    Returns a structured answer directly from retrieved chunks.
-    No hallucination possible — only retrieval content is used.
-    """
-    if not docs:
-        return (
-            "Insufficient data: I could not find reliable information about this "
-            "in my knowledge base. Please consult your local Krishi Vigyan Kendra "
-            "(KVK) or agricultural extension officer."
-        )
-
-    lines = ["Here is what I found in my knowledge base:\n"]
-    for i, (doc, score) in enumerate(docs, 1):
-        meta = doc.metadata
-        lines.append(
-            f"**Source {i}** (crop: {meta.get('crop','general')}, "
-            f"topic: {meta.get('topic','general')}, score: {score:.2f}):\n"
-            f"{doc.page_content}\n"
-        )
-    lines.append(
-        "\n_Note: This answer is retrieved directly from the knowledge base. "
-        "For detailed advice, set OPENAI_API_KEY to enable AI-generated responses._"
-    )
-    return "\n".join(lines)
+    return response["message"]["content"]
 
 
 def generate_answer(prompt: str, docs: list[tuple[Document, float]], history: list = []) -> str:
-    """
-    Step 7 – LLM Response Generation.
-    Uses Groq if key is available, otherwise structured fallback.
-    """
-    api_key = os.environ.get("GROQ_API_KEY", "").strip()
-    if api_key:
-        try:
-            return _call_openai(prompt, history)
-        except Exception as e:
-            logger.error(f"Groq call failed: {e}")
-            return _call_fallback(prompt, docs)
-    else:
-        logger.warning("GROQ_API_KEY not set — using retrieval-only fallback.")
-        return _call_fallback(prompt, docs)
+    try:
+        return _call_llama(prompt)
 
+    except Exception as e:
+        logger.error(f"LLM call failed: {e}")
 
+        # fallback to retrieved content
+        if docs:
+            return docs[0][0].page_content
+
+        return "I couldn't generate an answer right now. Please try again later."
+    
 # ─── Public Entry Point ───────────────────────────────────────────────────────
 
 # Store user's name across conversation
@@ -359,7 +306,7 @@ def ask(raw_query: str, history: list = []) -> dict:
             "content": doc.page_content,
             "crop":    doc.metadata.get("crop", "general"),
             "topic":   doc.metadata.get("topic", "general"),
-            "score":   round(score, 3),
+            "score": float(round(float(score), 3)),
         }
         for doc, score in docs
     ]
