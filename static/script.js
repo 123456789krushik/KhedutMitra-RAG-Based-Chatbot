@@ -107,7 +107,7 @@ async function sendQuery() {
     // Save user message to history
     chatHistory.push({ role: "user", content: query });
 
-    const res = await fetch("/chat", {
+    const res = await fetch("/ask", {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify({ 
